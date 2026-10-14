@@ -19,6 +19,10 @@ on:
         description: 'Admin panel password for the preview (empty = auto-generated, shown in summary)'
         required: false
         default: ''
+      public_hostname:
+        description: 'Public hostname served by the named tunnel (requires CF_TUNNEL_TOKEN secret)'
+        required: false
+        default: 'snap00.mrme.tech'
 
 # A single preview per branch/run; canceling is done manually via "Cancel workflow".
 concurrency:
@@ -89,14 +93,10 @@ jobs:
       - name: Install cloudflared
         run: |
           set -eux
-          ARCH="$(dpkg --print-architecture)"
-          case "$ARCH" in
-            amd64) CF_ARCH="amd64" ;;
-            arm64) CF_ARCH="arm64" ;;
-            *) echo "Unsupported arch: $ARCH"; exit 1 ;;
-          esac
-          curl -fsSL -o cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb"
-          sudo dpkg -i cloudflared.deb
+          sudo mkdir -p --mode=0755 /usr/share/keyrings
+          curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
+          sudo apt-get update && sudo apt-get install -y cloudflared
           cloudflared --version
 
       - name: Start SnappyMail (PHP built-in server)
@@ -132,12 +132,18 @@ jobs:
 
           if [ -n "${CF_TUNNEL_TOKEN:-}" ]; then
             echo "Using authenticated (named) tunnel from CF_TUNNEL_TOKEN secret"
+            # NOTE: `cloudflared service install` is for persistent VMs with
+            # systemd only — GitHub runners are ephemeral with no systemd, so
+            # the equivalent here is `cloudflared tunnel run --token`.
+            # The tunnel's public hostname (e.g. snap00.mrme.tech) must already
+            # be routed to this tunnel in the Cloudflare dashboard
+            # (tunnel's Public Hostname -> http://127.0.0.1:PORT).
             nohup cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" > /tmp/cloudflared.log 2>&1 &
             echo $! > /tmp/cloudflared.pid
             sleep 15
-            # Named tunnel hostnames are user-configured; nothing to detect.
-            echo "NAMED_TUNNEL" > /tmp/public-url.txt
-            echo "url=" >> "$GITHUB_OUTPUT"
+            # Named tunnel hostnames are user-configured; record the expected one.
+            echo "https://${PUBLIC_HOSTNAME}" > /tmp/public-url.txt
+            echo "url=https://${PUBLIC_HOSTNAME}" >> "$GITHUB_OUTPUT"
           else
             echo "Using ephemeral Quick Tunnel (no token needed)"
             # Attempt 1: default transport (QUIC). Attempt 2: http2 fallback,
@@ -186,19 +192,18 @@ jobs:
             if [ "$URL" = "NAMED_TUNNEL" ]; then
               echo "- Public: your named-tunnel hostname (from CF_TUNNEL_TOKEN setup)"
             else
-              echo "- Public (Cloudflare Quick Tunnel): $URL"
+              echo "- Public: $URL"
               echo "- Admin panel: ${URL}/?admin"
             fi
             echo "- To stop early: open the workflow run and click **Cancel workflow**."
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$URL" != "NAMED_TUNNEL" ]; then
-            echo "::notice title=SnappyMail preview::$URL"
-          fi
+          echo "::notice title=SnappyMail preview::$URL"
         env:
           # Optional: create a repository secret named CF_TUNNEL_TOKEN with a
           # `cloudflared tunnel token <NAME>` value to use a stable named tunnel
           # instead of an ephemeral *.trycloudflare.com URL.
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+          PUBLIC_HOSTNAME: ${{ inputs.public_hostname || 'snap00.mrme.tech' }}
 
       - name: Publish tunnel info artifact
         if: always()
