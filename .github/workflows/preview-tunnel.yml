@@ -15,6 +15,10 @@ on:
         description: 'PHP version to use'
         required: false
         default: '8.2'
+      admin_password:
+        description: 'Admin panel password for the preview (empty = auto-generated, shown in summary)'
+        required: false
+        default: ''
 
 # A single preview per branch/run; canceling is done manually via "Cancel workflow".
 concurrency:
@@ -57,6 +61,30 @@ jobs:
           chmod -R 777 data
           php -v
           ls snappymail/v/
+
+      - name: Set admin password
+        run: |
+          set -eu
+          if [ -z "${ADMIN_PASS:-}" ]; then
+            echo "No admin_password input — SnappyMail will auto-generate one (see 'Show admin credentials' step)."
+            exit 0
+          fi
+          echo "::add-mask::$ADMIN_PASS"
+          SNAPPYMAIL_INCLUDE_AS_API=1 php -r '
+            $_ENV["SNAPPYMAIL_INCLUDE_AS_API"] = true;
+            require "index.php";
+            $pass = getenv("ADMIN_PASS");
+            if (!$pass) { fwrite(STDERR, "Empty admin password\n"); exit(1); }
+            $oConfig = \RainLoop\Api::Config();
+            $oConfig->SetPassword(new \SnappyMail\SensitiveString($pass));
+            if (!$oConfig->Save()) { fwrite(STDERR, "Failed to save config\n"); exit(1); }
+            $passfile = APP_PRIVATE_DATA . "admin_password.txt";
+            if (is_file($passfile)) { unlink($passfile); }
+            echo "Admin password preset\n";
+          '
+          grep -q 'admin_password' data/_data_/_default_/configs/application.ini && echo "admin_password hash present"
+        env:
+          ADMIN_PASS: ${{ inputs.admin_password }}
 
       - name: Install cloudflared
         run: |
@@ -215,15 +243,23 @@ jobs:
 
       - name: Show admin credentials
         run: |
-          set -eux
-          # Trigger generation of the random admin password (first ?admin hit
-          # creates data/_data_/_default_/admin_password.txt), then publish it.
-          curl -s -o /dev/null -L --max-time 20 "http://127.0.0.1:${PORT}/?admin" || true
+          set -eu
+          if [ -n "${ADMIN_PASS_PRESET:-}" ]; then
+            {
+              echo "## Admin credentials (ephemeral preview only)"
+              echo ""
+              echo "- Login: \`admin\`"
+              echo "- Password: the \`admin_password\` workflow input value"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Random flow: first ?admin hit creates
+          # data/_data_/_default_/admin_password.txt — trigger it, then publish.
           PASSFILE="data/_data_/_default_/admin_password.txt"
           for i in $(seq 1 6); do
             [ -s "$PASSFILE" ] && break
-            sleep 5
             curl -s -o /dev/null -L --max-time 20 "http://127.0.0.1:${PORT}/?admin" || true
+            sleep 5
           done
           {
             echo "## Admin credentials (ephemeral preview only)"
@@ -238,6 +274,8 @@ jobs:
           if [ -s "$PASSFILE" ]; then
             echo "::notice title=SnappyMail admin password::$(cat "$PASSFILE")"
           fi
+        env:
+          ADMIN_PASS_PRESET: ${{ inputs.admin_password }}
 
       - name: Keep alive
         run: |

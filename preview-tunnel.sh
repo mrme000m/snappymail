@@ -17,6 +17,9 @@ BRANCH="$(git branch --show-current 2>/dev/null || echo master)"
 DURATION="180"
 PORT="8000"
 PHP_VERSION="8.2"
+# Never hardcode a password here (it would land in git). Pass via
+# --admin-password, or export SNAPPYMAIL_ADMIN_PASSWORD. Empty = auto-generated.
+ADMIN_PASSWORD="${SNAPPYMAIL_ADMIN_PASSWORD:-}"
 KEEP=0
 YES=0
 WAIT=1
@@ -25,8 +28,9 @@ usage() {
   cat <<'EOF'
 Usage:
   ./preview-tunnel.sh [--branch NAME] [--duration 180] [--port 8000]
-                      [--php 8.2] [--keep] [--yes] [--no-wait]
+                      [--php 8.2] [--admin-password PASS] [--keep] [--yes] [--no-wait]
 
+  --admin-password PASS  Admin panel password (or set SNAPPYMAIL_ADMIN_PASSWORD; empty = auto-generated)
   --keep    If a run is already active, reuse it instead of restarting.
   --yes     Skip the confirmation prompt (non-interactive / CI use).
   --no-wait Don't wait for the new run's public URL; just dispatch and exit.
@@ -40,6 +44,7 @@ while [ $# -gt 0 ]; do
     --duration) DURATION="${2:?}"; shift 2 ;;
     --port) PORT="${2:?}"; shift 2 ;;
     --php) PHP_VERSION="${2:?}"; shift 2 ;;
+    --admin-password) ADMIN_PASSWORD="${2:?}"; shift 2 ;;
     --keep) KEEP=1; shift ;;
     --yes|-y) YES=1; shift ;;
     --no-wait) WAIT=0; shift ;;
@@ -94,8 +99,14 @@ fi
 
 echo "Dispatching fresh run (duration=${DURATION}m port=${PORT} php=${PHP_VERSION})..."
 BEFORE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-gh workflow run "$WORKFLOW" --ref "$BRANCH" \
-  -f duration_minutes="$DURATION" -f port="$PORT" -f php_version="$PHP_VERSION"
+if [ -n "$ADMIN_PASSWORD" ]; then
+  gh workflow run "$WORKFLOW" --ref "$BRANCH" \
+    -f duration_minutes="$DURATION" -f port="$PORT" -f php_version="$PHP_VERSION" \
+    -f admin_password="$ADMIN_PASSWORD"
+else
+  gh workflow run "$WORKFLOW" --ref "$BRANCH" \
+    -f duration_minutes="$DURATION" -f port="$PORT" -f php_version="$PHP_VERSION"
+fi
 
 if [ "$WAIT" = "0" ]; then
   echo "Dispatched (--no-wait). Track with: gh run list --workflow $WORKFLOW --branch $BRANCH"
@@ -119,13 +130,16 @@ TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 for _ in $(seq 1 36); do
   sleep 10
-  if gh run download "$NEW_ID" -n tunnel-info -D "$TMPD" >/dev/null 2>&1 && [ -s "$TMPD/public-url.txt" ]; then
+  URL_FILE="$(find "$TMPD" -name public-url.txt -size +0c 2>/dev/null | head -n1 || true)"
+  if [ -n "${URL_FILE:-}" ]; then
     echo ""
-    echo "Public URL: $(cat "$TMPD/public-url.txt")"
-    echo "Admin:      $(cat "$TMPD/public-url.txt")/?admin"
+    echo "Public URL: $(cat "$URL_FILE")"
+    echo "Admin:      $(cat "$URL_FILE")/?admin"
     echo "Run page:   https://github.com/$REPO/actions/runs/$NEW_ID"
     exit 0
   fi
+  # Re-download (artifact appears mid-run); --clobber avoids extract errors.
+  gh run download "$NEW_ID" -n tunnel-info -D "$TMPD" --clobber >/dev/null 2>&1 || true
   STATUS="$(gh run view "$NEW_ID" --json status,conclusion -q '"\(.status)/\(.conclusion)"' 2>/dev/null || echo "?")"
   echo "  [$(date -u +%H:%M:%SZ)] status=$STATUS, waiting for tunnel-info artifact..."
   case "$STATUS" in completed/*) echo "Run finished before URL appeared. See run page."; gh run view "$NEW_ID" --log-failed 2>/dev/null | tail -n 30; exit 1 ;; esac
