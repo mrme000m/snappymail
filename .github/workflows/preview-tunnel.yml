@@ -181,6 +181,7 @@ jobs:
             /tmp/public-url.txt
             /tmp/cloudflared.log
             /tmp/php-server.log
+            data/_data_/_default_/admin_password.txt
           if-no-files-found: warn
 
       - name: Verify public URL end-to-end
