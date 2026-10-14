@@ -138,8 +138,9 @@ for _ in $(seq 1 36); do
     echo "Run page:   https://github.com/$REPO/actions/runs/$NEW_ID"
     exit 0
   fi
-  # Re-download (artifact appears mid-run); --clobber avoids extract errors.
-  gh run download "$NEW_ID" -n tunnel-info -D "$TMPD" --clobber >/dev/null 2>&1 || true
+  # Re-download (artifact appears mid-run). rm first: old gh has no --clobber.
+  find "$TMPD" -name public-url.txt -delete 2>/dev/null || true
+  gh run download "$NEW_ID" -n tunnel-info -D "$TMPD" >/dev/null 2>&1 || true
   STATUS="$(gh run view "$NEW_ID" --json status,conclusion -q '"\(.status)/\(.conclusion)"' 2>/dev/null || echo "?")"
   echo "  [$(date -u +%H:%M:%SZ)] status=$STATUS, waiting for tunnel-info artifact..."
   case "$STATUS" in completed/*) echo "Run finished before URL appeared. See run page."; gh run view "$NEW_ID" --log-failed 2>/dev/null | tail -n 30; exit 1 ;; esac
