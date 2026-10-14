@@ -1,0 +1,17 @@
+{
+    "IMAP": {
+        "host": "imap.uclv.cu",
+        "port": 993,
+        "type": 1
+    },
+    "SMTP": {
+        "host": "smtp.uclv.cu",
+        "port": 587,
+        "type": 2,
+        "useAuth": true,
+        "setSender": true
+    },
+    "Sieve": {
+        "enabled": false
+    }
+}

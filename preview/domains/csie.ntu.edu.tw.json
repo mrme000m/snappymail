@@ -1,0 +1,17 @@
+{
+    "IMAP": {
+        "host": "imap.csie.ntu.edu.tw",
+        "port": 993,
+        "type": 1
+    },
+    "SMTP": {
+        "host": "smtp.csie.ntu.edu.tw",
+        "port": 587,
+        "type": 2,
+        "useAuth": true,
+        "setSender": true
+    },
+    "Sieve": {
+        "enabled": false
+    }
+}

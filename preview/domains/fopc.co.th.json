@@ -1,0 +1,17 @@
+{
+    "IMAP": {
+        "host": "mail.fopc.co.th",
+        "port": 993,
+        "type": 1
+    },
+    "SMTP": {
+        "host": "smtp.fopc.co.th",
+        "port": 587,
+        "type": 2,
+        "useAuth": true,
+        "setSender": true
+    },
+    "Sieve": {
+        "enabled": false
+    }
+}

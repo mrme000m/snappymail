@@ -1,0 +1,17 @@
+{
+    "IMAP": {
+        "host": "imap.topangavintagemarket.com",
+        "port": 993,
+        "type": 1
+    },
+    "SMTP": {
+        "host": "smtp.topangavintagemarket.com",
+        "port": 587,
+        "type": 2,
+        "useAuth": true,
+        "setSender": true
+    },
+    "Sieve": {
+        "enabled": false
+    }
+}
