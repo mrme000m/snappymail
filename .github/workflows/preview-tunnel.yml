@@ -66,6 +66,15 @@ jobs:
           php -v
           ls snappymail/v/
 
+      - name: Configure mail domains
+        run: |
+          set -eux
+          # Install domain configs (IMAP/SMTP server settings only, no credentials)
+          # so accounts on these providers can log in with their own email + password.
+          mkdir -p data/_data_/_default_/domains
+          install -m 0644 preview/domains/*.json data/_data_/_default_/domains/
+          ls -l data/_data_/_default_/domains/
+
       - name: Set admin password
         run: |
           set -eu

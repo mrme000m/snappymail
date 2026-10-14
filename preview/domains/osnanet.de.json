@@ -1,0 +1,17 @@
+{
+    "IMAP": {
+        "host": "imap.osnanet.de",
+        "port": 993,
+        "type": 1
+    },
+    "SMTP": {
+        "host": "smtp.osnanet.de",
+        "port": 587,
+        "type": 2,
+        "useAuth": true,
+        "setSender": true
+    },
+    "Sieve": {
+        "enabled": false
+    }
+}
