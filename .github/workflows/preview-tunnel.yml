@@ -213,6 +213,32 @@ jobs:
           tail -n 80 /tmp/cloudflared.log
           exit 1
 
+      - name: Show admin credentials
+        run: |
+          set -eux
+          # Trigger generation of the random admin password (first ?admin hit
+          # creates data/_data_/_default_/admin_password.txt), then publish it.
+          curl -s -o /dev/null -L --max-time 20 "http://127.0.0.1:${PORT}/?admin" || true
+          PASSFILE="data/_data_/_default_/admin_password.txt"
+          for i in $(seq 1 6); do
+            [ -s "$PASSFILE" ] && break
+            sleep 5
+            curl -s -o /dev/null -L --max-time 20 "http://127.0.0.1:${PORT}/?admin" || true
+          done
+          {
+            echo "## Admin credentials (ephemeral preview only)"
+            echo ""
+            echo "- Login: \`admin\`"
+            if [ -s "$PASSFILE" ]; then
+              echo "- Password: \`$(cat "$PASSFILE")\`"
+            else
+              echo "- Password: login as \`admin\` with empty password, then set one"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$PASSFILE" ]; then
+            echo "::notice title=SnappyMail admin password::$(cat "$PASSFILE")"
+          fi
+
       - name: Keep alive
         run: |
           set -eux
