@@ -38,6 +38,19 @@ jobs:
           extensions: mbstring, intl, gd, zip, pdo_sqlite, sqlite3, curl, dom, openssl, json, iconv, ldap, imagick, gnupg, uuid
           coverage: none
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+
+      - name: Build frontend assets
+        run: |
+          set -eux
+          yarn install --frozen-lockfile
+          npx gulp build
+          ls snappymail/v/0.0.0/static/css/ snappymail/v/0.0.0/static/js/
+
       - name: Prepare data directory
         run: |
           mkdir -p data/_data_/_default_
@@ -179,10 +192,19 @@ jobs:
           for i in $(seq 1 12); do
             CODE="$(curl -s -o /tmp/home.html -w '%{http_code}' -L --max-time 20 "$URL/" || echo '000')"
             echo "attempt $i: HTTP $CODE"
-            if [ "$CODE" = "200" ]; then
-              echo "End-to-end check PASSED"
-              grep -Eo '<title>[^<]*' /tmp/home.html | head -n1 || true
-              exit 0
+            if [ "$CODE" = "200" ] && grep -q 'snappymail/v/' /tmp/home.html; then
+              # Static assets are gitignored and built by `gulp build`;
+              # a 200 on / alone is not enough (index.php returns 200 even when broken).
+              CSS="$(grep -Eo '/snappymail/v/[^"]+\.css' /tmp/home.html | head -n1)"
+              echo "Checking static asset: $CSS"
+              ASSET_CODE="$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 20 "${URL}${CSS}" || echo '000')"
+              echo "asset HTTP $ASSET_CODE"
+              if [ "$ASSET_CODE" = "200" ]; then
+                echo "End-to-end check PASSED"
+                grep -Eo '<title>[^<]*' /tmp/home.html | head -n1 || true
+                exit 0
+              fi
+              echo "index.html OK but static asset missing — frontend build incomplete"
             fi
             sleep 10
           done
