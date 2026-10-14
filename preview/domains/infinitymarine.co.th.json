@@ -12,6 +12,9 @@
         "setSender": true
     },
     "Sieve": {
+        "host": "localhost",
+        "port": 4190,
+        "type": 0,
         "enabled": false
     }
 }
