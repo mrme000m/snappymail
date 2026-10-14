@@ -1,0 +1,183 @@
+name: preview-tunnel
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'How long to keep the preview alive (minutes, max ~340)'
+        required: false
+        default: '180'
+      port:
+        description: 'Local port for the PHP web server'
+        required: false
+        default: '8000'
+      php_version:
+        description: 'PHP version to use'
+        required: false
+        default: '8.2'
+
+# A single preview per branch/run; canceling is done manually via "Cancel workflow".
+concurrency:
+  group: preview-tunnel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    # GitHub Jobs hard-limit is 6h (360 min). 350 gives headroom for setup/teardown
+    # while guaranteeing the requested minimum of 3h (180 min).
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php_version || '8.2' }}
+          extensions: mbstring, intl, gd, zip, pdo_sqlite, sqlite3, curl, dom, openssl, json, iconv, ldap, imagick, gnupg, uuid
+          coverage: none
+
+      - name: Prepare data directory
+        run: |
+          mkdir -p data/_data_/_default_
+          chmod -R 777 data
+          php -v
+          ls snappymail/v/
+
+      - name: Install cloudflared
+        run: |
+          set -eux
+          ARCH="$(dpkg --print-architecture)"
+          case "$ARCH" in
+            amd64) CF_ARCH="amd64" ;;
+            arm64) CF_ARCH="arm64" ;;
+            *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+          esac
+          curl -fsSL -o cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb"
+          sudo dpkg -i cloudflared.deb
+          cloudflared --version
+
+      - name: Start SnappyMail (PHP built-in server)
+        run: |
+          set -eux
+          PORT="${{ inputs.port || '8000' }}"
+          echo "PORT=$PORT" >> "$GITHUB_ENV"
+          # Serve repo root (index.php lives there)
+          nohup php -S "0.0.0.0:$PORT" -t . > /tmp/php-server.log 2>&1 &
+          echo $! > /tmp/php-server.pid
+          # Wait for HTTP 200 (index.php returns 105 text if broken, still HTTP 200)
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:$PORT/" > /dev/null; then
+              echo "Web server is up on port $PORT"
+              break
+            fi
+            echo "Waiting for PHP server... ($i/30)"
+            sleep 2
+            if [ "$i" = "30" ]; then
+              echo "PHP server failed to start:"
+              cat /tmp/php-server.log
+              exit 1
+            fi
+          done
+          curl -s -o /dev/null -w "local HTTP status: %{http_code}\n" "http://127.0.0.1:$PORT/"
+
+      - name: Start Cloudflare Tunnel and keep alive
+        run: |
+          set -eux
+          DURATION_MINUTES="${{ inputs.duration_minutes || '180' }}"
+          # Clamp to 10..340 so timeout-minutes: 350 is never exceeded
+          if [ "$DURATION_MINUTES" -gt 340 ]; then DURATION_MINUTES=340; fi
+          if [ "$DURATION_MINUTES" -lt 10 ]; then DURATION_MINUTES=10; fi
+          END_EPOCH=$(( $(date +%s) + DURATION_MINUTES * 60 ))
+          echo "Keeping preview alive for ${DURATION_MINUTES} minutes (until $(date -u -d "@$END_EPOCH" '+%Y-%m-%d %H:%M:%S UTC'))"
+
+          # Named tunnel if user provided a token, else free Quick Tunnel (no setup needed)
+          if [ -n "${CF_TUNNEL_TOKEN:-}" ]; then
+            echo "Using authenticated tunnel (CF_TUNNEL_TOKEN secret present)"
+            nohup cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" > /tmp/cloudflared.log 2>&1 &
+          else
+            echo "Using ephemeral Quick Tunnel (no token needed)"
+            nohup cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:${PORT}" > /tmp/cloudflared.log 2>&1 &
+          fi
+          echo $! > /tmp/cloudflared.pid
+
+          # Extract the public https://*.trycloudflare.com URL from cloudflared output
+          PUBLIC_URL=""
+          for i in $(seq 1 60); do
+            PUBLIC_URL="$(grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n1 || true)"
+            if [ -n "$PUBLIC_URL" ]; then
+              break
+            fi
+            # For named tunnels the hostname is not in logs; check config-provided hostname instead
+            sleep 2
+          done
+
+          {
+            echo "## SnappyMail preview"
+            echo ""
+            echo "- Local: http://127.0.0.1:${PORT}/ (runner-internal only)"
+            if [ -n "$PUBLIC_URL" ]; then
+              echo "- Public (Cloudflare Quick Tunnel): $PUBLIC_URL"
+              echo "- Admin panel: ${PUBLIC_URL}/?admin"
+            else
+              echo "- Public URL: see 'View tunnel URL' step below / cloudflared.log artifact (named tunnel or slow startup)."
+            fi
+            echo "- Expires at (UTC): $(date -u -d "@$END_EPOCH" '+%Y-%m-%d %H:%M:%S') (${DURATION_MINUTES} min from start)"
+            echo "- To stop early: open the workflow run and click **Cancel workflow**."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$PUBLIC_URL" ]; then
+            echo "::notice title=SnappyMail preview::${PUBLIC_URL}"
+            echo "=================================================================="
+            echo " SnappyMail is live at: $PUBLIC_URL"
+            echo " Admin panel at:        ${PUBLIC_URL}/?admin"
+            echo "=================================================================="
+          else
+            echo "::notice title=Cloudflare tunnel starting::Check cloudflared.log; named tunnel uses your configured hostname."
+          fi
+
+          # Heartbeat loop: proves liveness, keeps logs fresh, re-prints URL every 5 min.
+          while [ "$(date +%s)" -lt "$END_EPOCH" ]; do
+            REMAIN=$(( (END_EPOCH - $(date +%s)) / 60 ))
+            if [ -z "$PUBLIC_URL" ]; then
+              PUBLIC_URL="$(grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n1 || true)"
+              if [ -n "$PUBLIC_URL" ]; then
+                echo "::notice title=SnappyMail preview::${PUBLIC_URL}"
+                echo "SnappyMail is live at: $PUBLIC_URL"
+              fi
+            fi
+            STATUS="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/" || echo 'down')"
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] alive, ~${REMAIN} min left, local HTTP=${STATUS}, public=${PUBLIC_URL:-pending} | run 'Cancel workflow' to stop"
+            # Bail out early if either process died
+            if ! kill -0 "$(cat /tmp/php-server.pid)" 2>/dev/null; then
+              echo "PHP server died:"; cat /tmp/php-server.log; exit 1
+            fi
+            if ! kill -0 "$(cat /tmp/cloudflared.pid)" 2>/dev/null; then
+              echo "cloudflared died:"; cat /tmp/cloudflared.log; exit 1
+            fi
+            # Sleep in small chunks so Cancel responds fast; total ~5 min per iteration
+            for _ in $(seq 1 30); do
+              [ "$(date +%s)" -ge "$END_EPOCH" ] && break 2
+              sleep 10
+            done
+          done
+
+          echo "Requested duration elapsed — shutting down tunnel and web server."
+          kill "$(cat /tmp/cloudflared.pid)" || true
+          kill "$(cat /tmp/php-server.pid)" || true
+        env:
+          # Optional: create a repository secret named CF_TUNNEL_TOKEN with a
+          # `cloudflared tunnel token <NAME>` value to use a stable named tunnel
+          # instead of an ephemeral *.trycloudflare.com URL.
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+
+      - name: View tunnel URL
+        if: always()
+        run: |
+          echo "===== cloudflared.log (tail) ====="
+          tail -n 50 /tmp/cloudflared.log || true
+          echo "===== public URL (if Quick Tunnel) ====="
+          grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' /tmp/cloudflared.log | sort -u || echo "(no Quick Tunnel URL found — named tunnel or startup failed, see log above)"
+          echo "===== php-server.log (tail) ====="
+          tail -n 50 /tmp/php-server.log || true
